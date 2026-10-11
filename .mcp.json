@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agentic-tracking": {
+      "command": "npx",
+      "args": ["-y", "agentic-tracking", "mcp"]
+    }
+  }
+}
