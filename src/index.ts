@@ -42,6 +42,6 @@ export * from "./tracking.js";
 export const DEFAULT_BRAND: BrandConfig = defineBrand({
   name: "Agentic tracking", command: "agentic-tracking",
   description: "Attribute calls to lines and credit leads.",
-  keywords: ["call-tracking", "attribution", "agentic-suite", "claude-code", "codex", "cli", "mcp"],
+  keywords: ["call-tracking", "attribution", "telnyx", "agentic-suite", "claude-code", "codex", "cli", "mcp"],
   version: VERSION,
 });

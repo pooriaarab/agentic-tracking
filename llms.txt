@@ -2,7 +2,7 @@
 
 Attribute calls to lines and credit leads.
 
-SDK: runAttribution, TwilioSource, FileSource, D1Sink, StripeSink, FileSink.
+SDK: runAttribution, TwilioSource, TelnyxSource, FileSource, D1Sink, StripeSink, FileSink.
 CLI: agentic-tracking attribute --source call-file --file examples/calls.jsonl; defaults to a dry run.
 MCP: attribute_calls, list_lines, list_sources, get_cost_report.
 Docs: https://github.com/pooriaarab/agentic-tracking

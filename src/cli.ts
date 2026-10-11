@@ -2,7 +2,7 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { getCostReport, GuardError, VendorError } from "./core.js";
-import { defaultSinks, defaultSources, listSources, readDoctor, readLinesFile, runAttribution, selectSinks, selectSources, TwilioSource, type CallQuery, type CallSource, type EventSink, type TrackingLine } from "./tracking.js";
+import { defaultSinks, defaultSources, listSources, readDoctor, readLinesFile, runAttribution, selectSinks, selectSources, TelnyxSource, TwilioSource, type CallQuery, type CallSource, type EventSink, type LineSource, type TrackingLine } from "./tracking.js";
 import { DEFAULT_BRAND } from "./index.js";
 import { VERSION } from "./version.js";
 export class UsageError extends Error { constructor(message: string) { super(message); this.name = "UsageError"; } }
@@ -15,7 +15,8 @@ export function parseArgs(argv: string[]): CliRequest {
   const request: CliRequest = { command: command as CliCommand, dryRun: true, source: "all", sink: "all" };
   const withValue = command === "attribute"
     ? ["--to", "--from", "--since", "--limit", "--file", "--lines", "--source", "--sink"]
-    : command === "lines" ? ["--lines"] : [];
+    : command === "lines" ? ["--lines", "--source"] : [];
+  const lineSources = ["twilio", "telnyx"];
   while (args.length) {
     const flag = args.shift()!;
     if (flag === "--live" && command === "attribute") { request.dryRun = false; continue; }
@@ -34,10 +35,11 @@ export function parseArgs(argv: string[]): CliRequest {
   }
   if (request.since !== undefined && Number.isNaN(Date.parse(request.since))) throw new UsageError("--since needs a date");
   if (request.source !== "all" && !defaultSources().some(a => a.name === request.source)) throw new UsageError(`unknown source: ${request.source}`);
+  if (command === "lines" && request.source !== "all" && !lineSources.includes(request.source)) throw new UsageError(`lines needs --source ${lineSources.join(" or ")}`);
   if (request.sink !== "all" && !defaultSinks().some(a => a.name === request.sink)) throw new UsageError(`unknown sink: ${request.sink}`);
   return request;
 }
-export interface CliIo { out(line: string): void; err(line: string): void; sources?: CallSource[]; sinks?: EventSink[]; lineSource?: TwilioSource; fetchFn?: typeof fetch }
+export interface CliIo { out(line: string): void; err(line: string): void; sources?: CallSource[]; sinks?: EventSink[]; lineSource?: LineSource; fetchFn?: typeof fetch }
 function helpText(): string {
   return `${DEFAULT_BRAND.name} ${VERSION}
 ${DEFAULT_BRAND.description}
@@ -48,7 +50,8 @@ Commands:
   attribute [--to <n>] [--from <n>] [--since <d>]
             [--limit <n>] [--file <p>] [--lines <p>]
             [--source <name|all>] [--sink <name|all>] [--live]
-  lines [--lines <p>]   List tracking numbers from Twilio.
+  lines [--lines <p>] [--source twilio|telnyx]
+                        List tracking numbers. Defaults to Twilio.
   sources   List sources, sinks, and key status.
   costs     Print session cost totals.
   doctor    Check vendor reach and key status.
@@ -76,7 +79,7 @@ export async function runCli(argv: string[], io: CliIo = { out: console.log, err
       case "doctor": io.out(JSON.stringify(await readDoctor({ fetchFn: io.fetchFn }))); return 0;
       case "mcp": { const { startMcp } = await import("./mcp.js"); await startMcp({ sources, sinks }); return 0; }
       case "lines": {
-        const lineSource = io.lineSource ?? new TwilioSource(io.fetchFn ? { fetchFn: io.fetchFn } : {});
+        const lineSource = io.lineSource ?? (request.source === "telnyx" ? new TelnyxSource(io.fetchFn ? { fetchFn: io.fetchFn } : {}) : new TwilioSource(io.fetchFn ? { fetchFn: io.fetchFn } : {}));
         const map: Record<string, { campaign: string; source: string }> = {};
         for (const line of await linesFor(request)) map[line.number] = { campaign: line.campaign, source: line.source };
         io.out(JSON.stringify(await lineSource.listLines(map))); return 0;

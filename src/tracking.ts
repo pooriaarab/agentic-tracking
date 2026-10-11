@@ -250,7 +250,7 @@ function twilioDuration(value: unknown): number {
   if (!Number.isSafeInteger(seconds) || seconds < 0) throw new VendorError("twilio: bad payload (call duration: bad number)");
   return seconds;
 }
-export class TwilioSource extends RemoteAdapter implements CallSource {
+export class TwilioSource extends RemoteAdapter implements CallSource, LineSource {
   readonly name = "twilio";
   private twilioOptions: TwilioOptions;
   constructor(options: TwilioOptions = {}) {
@@ -302,6 +302,89 @@ export class TwilioSource extends RemoteAdapter implements CallSource {
         number,
         campaign: mapped?.campaign ?? "unassigned",
         source: mapped?.source ?? "twilio",
+        label: str(entry.friendly_name),
+      };
+    });
+  }
+}
+
+export const TELNYX_BASE_URL = "https://api.telnyx.com/v2";
+export const TELNYX_API_KEY_ENV = "TELNYX_API_KEY";
+export const TELNYX_RECORD_TYPE = "call-control";
+export interface TelnyxOptions extends AdapterOptions {
+  apiKey?: string;
+  baseUrl?: string;
+  recordType?: string;
+}
+export interface LineSource {
+  listLines(lineMap?: Record<string, { campaign: string; source: string }>): Promise<TrackingLine[]>;
+}
+function telnyxDate(value: unknown): string {
+  const raw = text(value, "record start");
+  const time = Date.parse(raw);
+  if (Number.isNaN(time)) throw new VendorError("telnyx: bad payload (record start: bad date)");
+  return new Date(time).toISOString();
+}
+function telnyxDuration(value: unknown): number {
+  const seconds = num(value);
+  if (seconds === undefined || !Number.isSafeInteger(seconds) || seconds < 0) throw new VendorError("telnyx: bad payload (record duration: bad number)");
+  return seconds;
+}
+export class TelnyxSource extends RemoteAdapter implements CallSource, LineSource {
+  readonly name = "telnyx";
+  private telnyxOptions: TelnyxOptions;
+  constructor(options: TelnyxOptions = {}) {
+    super(options);
+    this.telnyxOptions = options;
+  }
+  private headers(): Record<string, string> {
+    const key = this.telnyxOptions.apiKey ?? process.env[TELNYX_API_KEY_ENV];
+    if (!key?.trim()) throw new VendorError("telnyx: missing TELNYX_API_KEY");
+    return { authorization: `Bearer ${key.trim()}` };
+  }
+  async pull(q: CallQuery): Promise<CallEvent[]> {
+    const headers = this.headers();
+    const recordType = (this.telnyxOptions.recordType ?? TELNYX_RECORD_TYPE).trim();
+    if (!recordType) throw new VendorError("telnyx: missing record type");
+    const params = new URLSearchParams();
+    params.set("filter[record_type]", recordType);
+    params.set("sort", "-created_at");
+    params.set("page[size]", String(Math.min(Math.max(q.limit ?? 50, 1), 50)));
+    if (q.since?.trim()) {
+      const time = Date.parse(q.since.trim());
+      if (Number.isNaN(time)) throw new VendorError("telnyx: bad since date");
+      params.set("filter[created_at][gte]", new Date(time).toISOString());
+    }
+    const base = this.telnyxOptions.baseUrl ?? TELNYX_BASE_URL;
+    const payload = object(
+      await this.json(`${base}/detail_records?${params}`, { headers }, "telnyx"),
+      "record list",
+    );
+    return rows(payload.data, "record list")
+      .map(record => ({
+        callSid: str(record.id),
+        from: text(record.cli, "record cli"),
+        to: text(record.cld, "record cld"),
+        direction: str(record.direction),
+        startedAt: telnyxDate(record.started_at),
+        durationSec: telnyxDuration(record.call_sec),
+      }))
+      .filter(e => (!q.to?.trim() || sameNumber(e.to, q.to)) && (!q.from?.trim() || sameNumber(e.from, q.from)));
+  }
+  async listLines(lineMap: Record<string, { campaign: string; source: string }> = {}): Promise<TrackingLine[]> {
+    const headers = this.headers();
+    const base = this.telnyxOptions.baseUrl ?? TELNYX_BASE_URL;
+    const payload = object(
+      await this.json(`${base}/phone_numbers?page[size]=100`, { headers }, "telnyx"),
+      "number list",
+    );
+    return rows(payload.data, "number list").map(entry => {
+      const number = text(entry.phone_number, "number");
+      const mapped = lineMap[number] ?? lineMap[digits(number)];
+      return {
+        number,
+        campaign: mapped?.campaign ?? "unassigned",
+        source: mapped?.source ?? "telnyx",
         label: str(entry.friendly_name),
       };
     });
@@ -490,7 +573,7 @@ export class FileSink implements EventSink {
 }
 
 export function defaultSources(): CallSource[] {
-  return [new TwilioSource(), new FileSource()];
+  return [new TwilioSource(), new TelnyxSource(), new FileSource()];
 }
 export function defaultSinks(): EventSink[] {
   return [new D1Sink(), new StripeSink(), new FileSink()];
@@ -515,6 +598,7 @@ export interface SourceStatus {
 }
 const SOURCE_KEYS: Record<string, string[]> = {
   twilio: [TWILIO_SID_ENV, TWILIO_TOKEN_ENV],
+  telnyx: [TELNYX_API_KEY_ENV],
   "d1-log": ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_D1_DATABASE_ID", "CLOUDFLARE_API_TOKEN"],
   "stripe-billing": ["STRIPE_SECRET_KEY", "STRIPE_CUSTOMER_ID"],
 };
@@ -553,6 +637,7 @@ export interface DoctorCheck {
 }
 export interface DoctorReport {
   twilio: DoctorCheck;
+  telnyx: DoctorCheck;
   d1: DoctorCheck;
   stripe: DoctorCheck;
 }
@@ -561,6 +646,7 @@ export interface DoctorOptions {
   timeoutMs?: number;
   twilioSid?: string;
   twilioToken?: string;
+  telnyxKey?: string;
   d1AccountId?: string;
   d1DatabaseId?: string;
   d1Token?: string;
@@ -593,6 +679,11 @@ export async function readDoctor(options: DoctorOptions = {}): Promise<DoctorRep
     if (!sid?.trim() || !token?.trim()) throw new VendorError("twilio: missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN");
     await call(`${TWILIO_BASE_URL}/Accounts/${encodeURIComponent(sid.trim())}.json`, { headers: { authorization: `Basic ${base64(`${sid.trim()}:${token.trim()}`)}` } }, "twilio");
   });
+  const telnyxKey = options.telnyxKey ?? process.env[TELNYX_API_KEY_ENV];
+  const telnyx = await check("telnyx", async () => {
+    if (!telnyxKey?.trim()) throw new VendorError("telnyx: missing TELNYX_API_KEY");
+    await call(`${TELNYX_BASE_URL}/phone_numbers?page[size]=1`, { headers: { authorization: `Bearer ${telnyxKey.trim()}` } }, "telnyx");
+  });
   const accountId = options.d1AccountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
   const databaseId = options.d1DatabaseId ?? process.env.CLOUDFLARE_D1_DATABASE_ID;
   const apiToken = options.d1Token ?? process.env.CLOUDFLARE_API_TOKEN;
@@ -611,5 +702,5 @@ export async function readDoctor(options: DoctorOptions = {}): Promise<DoctorRep
     if (!stripeKey?.trim()) throw new VendorError("stripe-billing: missing STRIPE_SECRET_KEY");
     await call(`${STRIPE_BASE_URL}/balance`, { headers: { authorization: `Basic ${base64(`${stripeKey.trim()}:`)}` } }, "stripe-billing");
   });
-  return { twilio, d1, stripe };
+  return { twilio, telnyx, d1, stripe };
 }

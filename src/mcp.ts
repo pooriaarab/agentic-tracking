@@ -3,14 +3,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { getCostReport, type Guards, type Logger } from "./core.js";
 import { DEFAULT_BRAND } from "./index.js";
-import { defaultSinks, defaultSources, listSources, runAttribution, selectSinks, selectSources, TwilioSource, type CallSource, type EventSink, type TrackingLine } from "./tracking.js";
-export interface McpDeps { sources?: CallSource[]; sinks?: EventSink[]; lineSource?: TwilioSource; guards?: Guards; logger?: Logger }
+import { defaultSinks, defaultSources, listSources, runAttribution, selectSinks, selectSources, TelnyxSource, TwilioSource, type CallSource, type EventSink, type LineSource, type TrackingLine } from "./tracking.js";
+export interface McpDeps { sources?: CallSource[]; sinks?: EventSink[]; lineSource?: LineSource; telnyxLineSource?: LineSource; guards?: Guards; logger?: Logger }
 function reply(value: unknown, isError = false) { return { content: [{ type: "text" as const, text: JSON.stringify(value) }], ...(isError ? { isError: true } : {}) }; }
 const lineSchema = z.object({ number: z.string().min(1), campaign: z.string().min(1), source: z.string().min(1), label: z.string().optional() });
 export function createMcpServer(deps: McpDeps = {}): McpServer {
   const sources = deps.sources ?? defaultSources();
   const sinks = deps.sinks ?? defaultSinks();
   const lineSource = deps.lineSource ?? new TwilioSource();
+  const telnyxLineSource = deps.telnyxLineSource ?? new TelnyxSource();
   const server = new McpServer({ name: DEFAULT_BRAND.command, version: DEFAULT_BRAND.version });
   server.registerTool("attribute_calls", {
     description: "Pull calls, attribute them to lines, and push them to sinks. Preview by default.",
@@ -31,11 +32,11 @@ export function createMcpServer(deps: McpDeps = {}): McpServer {
     } catch (error) { return reply({ error: error instanceof Error ? error.message : String(error) }, true); }
   });
   server.registerTool("list_lines", {
-    description: "List tracking numbers from Twilio, merged with a line map.",
-    inputSchema: { lineMap: z.record(z.string(), z.object({ campaign: z.string(), source: z.string() })).optional() },
+    description: "List tracking numbers from Twilio or Telnyx, merged with a line map.",
+    inputSchema: { source: z.enum(["twilio", "telnyx"]).optional(), lineMap: z.record(z.string(), z.object({ campaign: z.string(), source: z.string() })).optional() },
     annotations: { readOnlyHint: true },
-  }, async ({ lineMap }) => {
-    try { return reply(await lineSource.listLines(lineMap ?? {})); }
+  }, async ({ source, lineMap }) => {
+    try { return reply(await (source === "telnyx" ? telnyxLineSource : lineSource).listLines(lineMap ?? {})); }
     catch (error) { return reply({ error: error instanceof Error ? error.message : String(error) }, true); }
   });
   server.registerTool("list_sources", { description: "List sources, sinks, and key status.", inputSchema: {}, annotations: { readOnlyHint: true } }, async () => reply(listSources(sources, sinks)));

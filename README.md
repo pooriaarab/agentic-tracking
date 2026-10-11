@@ -39,6 +39,7 @@ The file sink appends one JSON line per attribution.
 | Name | Kind | Setup | Result |
 | --- | --- | --- | --- |
 | twilio | source | TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN | Recent calls with from, to, duration |
+| telnyx | source | TELNYX_API_KEY | Detail records with cli, cld, duration |
 | call-file | source | --file with JSONL events | Local call events |
 | d1-log | sink | CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_API_TOKEN | Rows in call_attributions |
 | stripe-billing | sink | STRIPE_SECRET_KEY, STRIPE_CUSTOMER_ID | One meter event per credited lead |
@@ -82,6 +83,55 @@ console.log(await twilio.pull({ since: "2026-05-01", limit: 10 }));
 Pass a line map to `listLines` to tag numbers with campaigns.
 Without a map, every number reports `unassigned`.
 Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN before a live call.
+
+## Telnyx
+
+Telnyx lists call detail records and owned numbers through its v2 API.
+Pull reads detail records with a Bearer key.
+It accepts `--to`, `--from`, `--since`, and `--limit`.
+Since filters by record start. Limit caps page size at 50.
+Number filters run in the client.
+
+Set `TELNYX_API_KEY` in the environment before a live call.
+Pass a line map to `listLines` to tag numbers with campaigns.
+Without a map, every number reports `unassigned`.
+
+Use case 1: attribute Telnyx call logs to campaigns in D1.
+Preview the pull first. Add `--live` and the D1 sink after the preview looks right.
+
+```sh
+node dist/cli.js attribute --source telnyx --since 2026-05-01
+node dist/cli.js attribute --source telnyx --sink d1-log --since 2026-05-01 --live
+```
+
+```js
+import { D1Sink, TelnyxSource, runAttribution } from "./dist/index.js";
+
+const result = await runAttribution({
+  query: { since: "2026-05-01" },
+  lines: [{ number: "+15551230001", campaign: "summer-sale", source: "website" }],
+  sources: [new TelnyxSource()],
+  sinks: [new D1Sink()],
+});
+console.log(result.summary);
+```
+
+Use case 2: list Telnyx numbers, tag them, then credit leads.
+Read the numbers first. Save them with campaigns in a lines file.
+Then attribute Telnyx calls and push credited leads to billing.
+
+```sh
+node dist/cli.js lines --source telnyx
+node dist/cli.js attribute --source telnyx --sink stripe-billing --lines examples/lines.json --live
+```
+
+```js
+import { TelnyxSource } from "./dist/index.js";
+
+const telnyx = new TelnyxSource();
+console.log(await telnyx.listLines());
+console.log(await telnyx.pull({ since: "2026-05-01", limit: 10 }));
+```
 
 ## D1 log
 
@@ -154,7 +204,7 @@ agentic-core API.
 The `mcp` command and `agentic-tracking-mcp` bin serve stdio MCP.
 Use attribute_calls with to, from, since, limit, file, lines,
 source or sources, sink or sinks, and dryRun.
-DryRun defaults to true. list_lines shows Twilio numbers
+DryRun defaults to true. list_lines shows Twilio or Telnyx numbers
 with an optional line map. list_sources shows key status.
 get_cost_report reads session entries and unit totals.
 .mcp.json configures agentic-tracking through npx.
