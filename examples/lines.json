@@ -1,0 +1,14 @@
+[
+  {
+    "number": "+15551230001",
+    "campaign": "summer-sale",
+    "source": "website",
+    "label": "Site line"
+  },
+  {
+    "number": "+15551230002",
+    "campaign": "flyer",
+    "source": "print",
+    "label": "Flyer line"
+  }
+]
