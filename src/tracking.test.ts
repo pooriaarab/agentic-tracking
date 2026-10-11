@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createGuards, getCostReport, resetCosts, VendorError } from "./core.js";
+import telnyxRecords from "./fixtures/telnyx-detail-records.json" with { type: "json" };
+import telnyxNumbers from "./fixtures/telnyx-phone-numbers.json" with { type: "json" };
 import {
   attributeCalls,
   D1Sink,
@@ -16,6 +18,7 @@ import {
   selectSources,
   StripeSink,
   summarizeAttribution,
+  TelnyxSource,
   TwilioSource,
   type Attribution,
 } from "./tracking.js";
@@ -108,6 +111,65 @@ describe("twilio", () => {
     const bad = (call: unknown) => new TwilioSource({ accountSid: "AC1", authToken: "tok", fetchFn: vi.fn<typeof fetch>().mockResolvedValue(json({ calls: [call] })) }).pull({});
     await expect(bad({ sid: "CA1", from: "a", to: "b", start_time: "never", duration: "3" })).rejects.toBeInstanceOf(VendorError);
     await expect(bad({ sid: "CA1", from: "a", to: "b", start_time: "Fri, 01 May 2026 10:00:00 +0000", duration: "-2" })).rejects.toBeInstanceOf(VendorError);
+  });
+});
+
+describe("telnyx", () => {
+  test("pulls detail records with bearer auth and maps fields", async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(json(telnyxRecords));
+    const events = await new TelnyxSource({ apiKey: "key", fetchFn }).pull({ to: "+15551230001", since: "2026-05-01", limit: 5 });
+    expect(events).toEqual([{ callSid: "telnyx-record-1", from: "+15550001111", to: "+15551230001", direction: "inbound", startedAt: "2026-05-01T10:00:00.000Z", durationSec: 61 }]);
+    const [url, init] = fetchFn.mock.calls[0];
+    expect(url).toBe("https://api.telnyx.com/v2/detail_records?filter%5Brecord_type%5D=call-control&sort=-created_at&page%5Bsize%5D=5&filter%5Bcreated_at%5D%5Bgte%5D=2026-05-01T00%3A00%3A00.000Z");
+    expect((init?.headers as Record<string, string>).authorization).toBe("Bearer key");
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+  test("filters numbers in the client and caps page size at 50", async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => json(telnyxRecords));
+    const source = new TelnyxSource({ apiKey: "key", fetchFn });
+    expect(await source.pull({})).toHaveLength(2);
+    expect(await source.pull({ from: "5550002222" })).toHaveLength(1);
+    expect(await source.pull({ to: "+15559998888" })).toHaveLength(0);
+    await source.pull({ limit: 500 });
+    expect(String(fetchFn.mock.calls[3][0])).toContain("page%5Bsize%5D=50");
+  });
+  test("lists numbers and merges the line map", async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(json(telnyxNumbers));
+    const result = await new TelnyxSource({ apiKey: "key", fetchFn }).listLines({ "+15551230001": { campaign: "summer-sale", source: "website" } });
+    expect(result).toEqual([
+      { number: "+15551230001", campaign: "summer-sale", source: "website", label: "Site line" },
+      { number: "+15551230009", campaign: "unassigned", source: "telnyx", label: undefined },
+    ]);
+    expect(fetchFn.mock.calls[0][0]).toBe("https://api.telnyx.com/v2/phone_numbers?page[size]=100");
+  });
+  test("rejects a missing key before any fetch", async () => {
+    vi.stubEnv("TELNYX_API_KEY", "");
+    const fetchFn = vi.fn();
+    await expect(new TelnyxSource({ fetchFn }).pull({})).rejects.toBeInstanceOf(VendorError);
+    await expect(new TelnyxSource({ fetchFn }).listLines()).rejects.toBeInstanceOf(VendorError);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+  test.each(["http", "network", "payload", "since"])("rejects %s failures", async mode => {
+    const fetchFn = mode === "network"
+      ? vi.fn().mockRejectedValue(new Error("offline"))
+      : vi.fn().mockResolvedValue(mode === "http" ? new Response("", { status: 500 }) : json({}));
+    const source = new TelnyxSource({ apiKey: "key", fetchFn });
+    await expect(source.pull(mode === "since" ? { since: "not-a-date" } : {})).rejects.toBeInstanceOf(VendorError);
+    if (mode === "since") expect(fetchFn).not.toHaveBeenCalled();
+  });
+  test("rejects bad record fields", async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(json({ data: [{ id: "r1" }] }));
+    await expect(new TelnyxSource({ apiKey: "key", fetchFn }).pull({})).rejects.toBeInstanceOf(VendorError);
+  });
+  test("rejects bad dates and durations", async () => {
+    const bad = (record: unknown) => new TelnyxSource({ apiKey: "key", fetchFn: vi.fn<typeof fetch>().mockResolvedValue(json({ data: [record] })) }).pull({});
+    await expect(bad({ cli: "a", cld: "b", started_at: "never", call_sec: 3 })).rejects.toBeInstanceOf(VendorError);
+    await expect(bad({ cli: "a", cld: "b", started_at: "2026-05-01T10:00:00.000Z", call_sec: -2 })).rejects.toBeInstanceOf(VendorError);
+  });
+  test("attributes pulled records through the shared log path", async () => {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(json(telnyxRecords));
+    const result = await runAttribution({ lines, sources: [new TelnyxSource({ apiKey: "key", fetchFn })], sinks: [] });
+    expect(result).toMatchObject({ dryRun: false, summary: { calls: 2, creditedLeads: 1 } });
   });
 });
 
@@ -312,11 +374,12 @@ describe("runAttribution", () => {
 
 describe("readDoctor", () => {
   test("reports missing creds without network calls", async () => {
-    for (const env of ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_D1_DATABASE_ID", "CLOUDFLARE_API_TOKEN", "STRIPE_SECRET_KEY"]) vi.stubEnv(env, "");
+    for (const env of ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TELNYX_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_D1_DATABASE_ID", "CLOUDFLARE_API_TOKEN", "STRIPE_SECRET_KEY"]) vi.stubEnv(env, "");
     const fetchFn = vi.fn();
     const report = await readDoctor({ fetchFn });
     expect(report).toEqual({
       twilio: { ok: false, error: "missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN" },
+      telnyx: { ok: false, error: "missing TELNYX_API_KEY" },
       d1: { ok: false, error: "missing CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, or CLOUDFLARE_API_TOKEN" },
       stripe: { ok: false, error: "missing STRIPE_SECRET_KEY" },
     });
@@ -325,12 +388,14 @@ describe("readDoctor", () => {
   test("checks each vendor endpoint", async () => {
     const fetchFn = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(json({ sid: "AC1" }))
+      .mockResolvedValueOnce(json({ data: [] }))
       .mockResolvedValueOnce(json({ success: true, errors: [], result: [{}] }))
       .mockResolvedValueOnce(json({ object: "balance" }));
-    const report = await readDoctor({ fetchFn, twilioSid: "AC1", twilioToken: "tok", d1AccountId: "a", d1DatabaseId: "d", d1Token: "t", stripeKey: "sk" });
-    expect(report).toEqual({ twilio: { ok: true }, d1: { ok: true }, stripe: { ok: true } });
+    const report = await readDoctor({ fetchFn, twilioSid: "AC1", twilioToken: "tok", telnyxKey: "key", d1AccountId: "a", d1DatabaseId: "d", d1Token: "t", stripeKey: "sk" });
+    expect(report).toEqual({ twilio: { ok: true }, telnyx: { ok: true }, d1: { ok: true }, stripe: { ok: true } });
     expect(fetchFn.mock.calls.map(c => c[0])).toEqual([
       "https://api.twilio.com/2010-04-01/Accounts/AC1.json",
+      "https://api.telnyx.com/v2/phone_numbers?page[size]=1",
       "https://api.cloudflare.com/client/v4/accounts/a/d1/database/d/query",
       "https://api.stripe.com/v1/balance",
     ]);
@@ -338,10 +403,12 @@ describe("readDoctor", () => {
   test("isolates one vendor failure", async () => {
     const fetchFn = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response("", { status: 401 }))
+      .mockResolvedValueOnce(new Response("", { status: 401 }))
       .mockResolvedValueOnce(json({ success: false, errors: [], result: [] }))
       .mockRejectedValueOnce(new Error("offline"));
-    const report = await readDoctor({ fetchFn, twilioSid: "AC1", twilioToken: "tok", d1AccountId: "a", d1DatabaseId: "d", d1Token: "t", stripeKey: "sk" });
+    const report = await readDoctor({ fetchFn, twilioSid: "AC1", twilioToken: "tok", telnyxKey: "key", d1AccountId: "a", d1DatabaseId: "d", d1Token: "t", stripeKey: "sk" });
     expect(report.twilio).toMatchObject({ ok: false });
+    expect(report.telnyx).toMatchObject({ ok: false });
     expect(report.d1).toMatchObject({ ok: false });
     expect(report.stripe).toMatchObject({ ok: false });
   });

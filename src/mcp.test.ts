@@ -22,3 +22,15 @@ test("MCP tools use injected sources and default to preview", async () => {
     pull.mockRejectedValue(new Error("down")); expect(await client.callTool({ name: "attribute_calls", arguments: { to: "b", dryRun: false } })).toMatchObject({ isError: true });
   } finally { await client.close(); await server.close(); }
 });
+test("list_lines routes to the Telnyx source on request", async () => {
+  const twilioLines = vi.fn().mockResolvedValue([{ number: "a", campaign: "c", source: "twilio" }]);
+  const telnyxLines = vi.fn().mockResolvedValue([{ number: "b", campaign: "c", source: "telnyx" }]);
+  const [ct, st] = InMemoryTransport.createLinkedPair(); const server = createMcpServer({ lineSource: { listLines: twilioLines }, telnyxLineSource: { listLines: telnyxLines } }); const client = new Client({ name: "probe", version: "0.0.0" });
+  await server.connect(st); await client.connect(ct);
+  try {
+    expect(textOf(await client.callTool({ name: "list_lines", arguments: { source: "telnyx" } }))).toEqual([{ number: "b", campaign: "c", source: "telnyx" }]);
+    expect(telnyxLines).toHaveBeenCalledOnce(); expect(twilioLines).not.toHaveBeenCalled();
+    expect(textOf(await client.callTool({ name: "list_lines", arguments: {} }))).toEqual([{ number: "a", campaign: "c", source: "twilio" }]);
+    expect(twilioLines).toHaveBeenCalledOnce();
+  } finally { await client.close(); await server.close(); }
+});
