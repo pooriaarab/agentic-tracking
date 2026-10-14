@@ -1,6 +1,6 @@
 {
   "name": "agentic-tracking",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Call attribution for Twilio, Telnyx, Cloudflare D1, and Stripe with a TypeScript SDK, CLI, and Model Context Protocol server.",
   "keywords": [
     "call-tracking",
