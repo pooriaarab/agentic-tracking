@@ -1,16 +1,20 @@
 {
   "name": "agentic-tracking",
   "version": "0.2.0",
-  "description": "Attribute calls to lines and credit leads.",
+  "description": "Call attribution for Twilio, Telnyx, Cloudflare D1, and Stripe with a TypeScript SDK, CLI, and Model Context Protocol server.",
   "keywords": [
     "call-tracking",
-    "attribution",
+    "call-attribution",
+    "twilio",
     "telnyx",
-    "agentic-suite",
-    "claude-code",
-    "codex",
+    "cloudflare-d1",
+    "stripe",
+    "meter-events",
+    "typescript",
+    "nodejs",
     "cli",
-    "mcp"
+    "mcp",
+    "jsonl"
   ],
   "license": "MIT",
   "author": "Pooria Arab",
