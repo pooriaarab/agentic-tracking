@@ -1,219 +1,201 @@
-# Agentic tracking
+# agentic-tracking
 
-Attribute calls to lines and credit leads.
+[![npm version](https://img.shields.io/npm/v/agentic-tracking)](https://www.npmjs.com/package/agentic-tracking)
+[![Downloads/month](https://img.shields.io/npm/dm/agentic-tracking)](https://www.npmjs.com/package/agentic-tracking)
+[![MIT license](https://img.shields.io/npm/l/agentic-tracking)](https://opensource.org/license/mit)
 
-Match each inbound call to the line that rang.
-Log every attributed call to a SQL store.
-Send each credited lead to usage billing.
+[Package](https://www.npmjs.com/package/agentic-tracking) · [Support](https://github.com/pooriaarab/agentic-tracking/issues)
 
-## Start
+agentic-tracking is an open-source call attribution toolkit for developers who map phone calls to campaigns.
+It reads Twilio, Telnyx, or local call records and writes attribution results to configured sinks.
+A TypeScript SDK, command-line interface, and Model Context Protocol (MCP) server expose the workflow.
 
-Use Node.js 18 or later. Install and check the package:
-
-```sh
-npm install
-npm run build
-npm run typecheck
-npm test
-node dist/cli.js --help
-node dist/cli.js sources
-node dist/cli.js doctor
-node dist/cli.js attribute --source call-file --file examples/calls.jsonl --lines examples/lines.json
-TRACKING_LOG_FILE=/tmp/agentic-tracking.jsonl node dist/cli.js attribute --source call-file --sink file-log --file examples/calls.jsonl --lines examples/lines.json --live
-node dist/cli.js costs
-```
-
-Attribute defaults to a dry run. It calls no source and records no cost.
-Add `--live` to pull calls and push results. Select one source with
-`--source`, one sink with `--sink`, or use `all`.
-Each source and sink returns its own success or error.
-Failed sources or sinks cause CLI exit 1.
-Bad CLI usage exits 2. Cost entries count calls, not currency.
-Reports stay in the current process and reset when it exits.
-
-The live example writes to TRACKING_LOG_FILE.
-The file sink appends one JSON line per attribution.
-
-## Sources and sinks
-
-| Name | Kind | Setup | Result |
-| --- | --- | --- | --- |
-| twilio | source | TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN | Recent calls with from, to, duration |
-| telnyx | source | TELNYX_API_KEY | Detail records with cli, cld, duration |
-| call-file | source | --file with JSONL events | Local call events |
-| d1-log | sink | CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_API_TOKEN | Rows in call_attributions |
-| stripe-billing | sink | STRIPE_SECRET_KEY, STRIPE_CUSTOMER_ID | One meter event per credited lead |
-| file-log | sink | TRACKING_LOG_FILE or constructor file | Appended JSONL attributions |
-
-Keys also accept constructor options on each adapter.
-Network adapters accept `fetchFn` and `timeoutMs`.
-Run `sources` to list names with key status.
-Run `doctor` to check vendor reach before a live run.
-
-The sample JSONL uses `callSid, from, to, direction, status, startedAt, durationSec`.
-Only `from` and `to` are required. The source filters by `--to`, `--from`,
-`--since`, and `--limit`. Blank lines are skipped.
-
-The sample lines file maps each number to a campaign and a source.
-Calls to unknown numbers get campaign `unassigned` and source `unknown`.
-A matched call credits a lead when it has a duration above zero,
-or when no duration is present. Number match ignores format
-and compares the last digits.
-
-## Twilio
-
-Twilio lists calls and owned numbers through its REST API.
-Pull reads recent inbound and outbound calls with Basic auth.
-It accepts `--to`, `--from`, `--since`, and `--limit`.
-Since filters by start date. Limit caps PageSize at 1000.
+## Install
 
 ```sh
-node dist/cli.js lines
-node dist/cli.js attribute --source twilio --since 2026-05-01 --live
+npm install agentic-tracking
 ```
+
+Use Node.js 18 or later. The package includes TypeScript declarations and has three direct runtime dependencies.
+
+## Attribute your first call
+
+Save this as `first-call.mjs`, then run `node first-call.mjs`.
+No credentials or environment variables are required for this local example.
 
 ```js
-import { TwilioSource } from "./dist/index.js";
+import { writeFile, readFile, rm } from 'node:fs/promises';
+import { FileSource, FileSink, runAttribution } from 'agentic-tracking';
 
-const twilio = new TwilioSource();
-console.log(await twilio.listLines());
-console.log(await twilio.pull({ since: "2026-05-01", limit: 10 }));
-```
-
-Pass a line map to `listLines` to tag numbers with campaigns.
-Without a map, every number reports `unassigned`.
-Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN before a live call.
-
-## Telnyx
-
-Telnyx lists call detail records and owned numbers through its v2 API.
-Pull reads detail records with a Bearer key.
-It accepts `--to`, `--from`, `--since`, and `--limit`.
-Since filters by record start. Limit caps page size at 50.
-Number filters run in the client.
-
-Set `TELNYX_API_KEY` in the environment before a live call.
-Pass a line map to `listLines` to tag numbers with campaigns.
-Without a map, every number reports `unassigned`.
-
-Use case 1: attribute Telnyx call logs to campaigns in D1.
-Preview the pull first. Add `--live` and the D1 sink after the preview looks right.
-
-```sh
-node dist/cli.js attribute --source telnyx --since 2026-05-01
-node dist/cli.js attribute --source telnyx --sink d1-log --since 2026-05-01 --live
-```
-
-```js
-import { D1Sink, TelnyxSource, runAttribution } from "./dist/index.js";
-
+await writeFile('calls.jsonl', JSON.stringify({
+  callSid: 'demo-1', from: '+15551230002', to: '+15551230001',
+  durationSec: 60, startedAt: '2026-10-01T12:00:00Z'
+}) + '\n');
+await rm('attributions.jsonl', { force: true });
 const result = await runAttribution({
-  query: { since: "2026-05-01" },
-  lines: [{ number: "+15551230001", campaign: "summer-sale", source: "website" }],
-  sources: [new TelnyxSource()],
-  sinks: [new D1Sink()],
+  query: { file: 'calls.jsonl' },
+  lines: [{ number: '+15551230001', campaign: 'demo', source: 'website' }],
+  sources: [new FileSource()],
+  sinks: [new FileSink({ file: 'attributions.jsonl' })]
 });
 console.log(result.summary);
+console.log(await readFile('attributions.jsonl', 'utf8'));
 ```
 
-Use case 2: list Telnyx numbers, tag them, then credit leads.
-Read the numbers first. Save them with campaigns in a lines file.
-Then attribute Telnyx calls and push credited leads to billing.
+Expect `calls: 1`, `creditedLeads: 1`, and a JSON line with campaign `demo`.
+The example replaces its two local demo files on each run.
 
-```sh
-node dist/cli.js lines --source telnyx
-node dist/cli.js attribute --source telnyx --sink stripe-billing --lines examples/lines.json --live
+## How it works
+
+```text
+Twilio / Telnyx / JSONL -> line matching -> attribution + summary
+                                         -> D1 / Stripe / JSONL
 ```
 
-```js
-import { TelnyxSource } from "./dist/index.js";
+Sources pull in parallel. The engine merges calls, matches destination numbers, and pushes results to sinks in parallel.
+Each adapter returns its own success or failure.
 
-const telnyx = new TelnyxSource();
-console.log(await telnyx.listLines());
-console.log(await telnyx.pull({ since: "2026-05-01", limit: 10 }));
-```
+## Why it exists
 
-## D1 log
+CallRail provides a managed call tracking product. Twilio provides programmable telephony APIs.
+agentic-tracking provides code-level attribution and sink adapters for developers who operate their own workflow.
 
-The D1 sink creates the table on first push, then upserts rows.
-It sends one batch with CREATE TABLE IF NOT EXISTS plus one
-INSERT OR REPLACE per attribution. Re-pushes stay idempotent
-because call_sid is the primary key.
+## Compare
 
-```js
-import { D1Sink, runAttribution } from "./dist/index.js";
+Scope checked on 2026-10-14 against [CallRail](https://www.callrail.com/call-tracking) and [Twilio Voice](https://www.twilio.com/docs/voice/api).
 
-const result = await runAttribution({ lines: [] }, {
-  sources: [],
-  sinks: [new D1Sink()],
-});
-console.log(result);
-```
+| Property | agentic-tracking | CallRail | Twilio Voice |
+| --- | --- | --- | --- |
+| Scope | Call-record attribution and sinks | Call tracking and analytics | Programmable telephony |
+| Deployment | Self-hosted Node.js process | Managed service | Managed APIs |
+| Configuration | Code, CLI flags, environment | Account dashboard | API requests |
+| Pricing model | MIT package; vendor charges apply | Subscription plans | Service usage |
+| Coverage here | Twilio, Telnyx, D1, Stripe, local files | CallRail tracking workflow | Twilio calls |
 
-Set CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID,
-and CLOUDFLARE_API_TOKEN before a live call. The token needs D1 read
-and write permission. The default table is `call_attributions`.
-Pass `table` to use another name. Table names accept letters,
-digits, and underscores only.
+## Coverage
 
-## Stripe billing
+The registries contain three sources and three sinks. All six have implementations; none is a scaffold.
 
-The Stripe sink sends one meter event per credited lead.
-It skips uncredited calls and reports the skipped count.
-Each event carries the call sid as its idempotency identifier,
-so a retry never bills twice. It sends the call time when the time
-falls inside the Stripe window, and omits it otherwise.
+| Integration | Adapter | Status | Setup |
+| --- | --- | --- | --- |
+| Twilio | `twilio` source and number listing | Implemented; live verification pending | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` |
+| Telnyx | `telnyx` source and number listing | Implemented; live verification pending | `TELNYX_API_KEY` |
+| Local JSONL | `call-file` source | Implemented; local example verified | File path |
+| Cloudflare D1 | `d1-log` sink | Implemented; live verification pending | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_D1_DATABASE_ID`, `CLOUDFLARE_API_TOKEN` |
+| Stripe Billing | `stripe-billing` sink | Implemented; live verification pending | `STRIPE_SECRET_KEY`, `STRIPE_CUSTOMER_ID` |
+| Local JSONL | `file-log` sink | Implemented; local example verified | File path or `TRACKING_LOG_FILE` |
 
-```js
-import { StripeSink } from "./dist/index.js";
+Four network integrations have source-level implementations and mocked tests. This README campaign performs zero live credential checks.
+Export credentials before running commands. The package does not load `.env` files automatically.
 
-const sink = new StripeSink({ eventName: "credited_lead" });
-console.log(await sink.push([]));
-```
+## Common use cases
 
-Set STRIPE_SECRET_KEY and STRIPE_CUSTOMER_ID before a live call.
-Set STRIPE_EVENT_NAME to change the meter event name.
-Create the meter with the same event name in the Stripe dashboard first.
-Events send one by one because Stripe allows one concurrent call
-per customer per meter.
+1. Agency developers: map Twilio calls to campaign lines and store attribution in Cloudflare D1.
+2. Operations teams: inspect Telnyx numbers and assign campaign labels through a line map.
+3. Billing developers: send credited leads to a configured Stripe Billing meter.
+4. Data engineers: replay JSONL call records and inspect local attribution output.
 
-## SDK
+## Features
 
-```js
-import { FileSink, FileSource, runAttribution } from "./dist/index.js";
+- **Line attribution:** Map destination numbers to campaign and source labels.
+- **Summaries:** Report calls, credited leads, and minutes by campaign and source.
+- **Preview mode:** Inspect selected adapters without pulling calls or writing results.
+- **Adapter results:** Inspect individual source and sink errors.
+- **Session usage:** Read call units recorded by the current process.
 
-const preview = await runAttribution({
-  query: { file: "examples/calls.jsonl" },
-  lines: [{ number: "+15551230001", campaign: "summer-sale", source: "website" }],
-  sources: [new FileSource()],
-  sinks: [new FileSink({ file: "/tmp/attribution.jsonl" })],
-}, { dryRun: true });
-console.log(preview);
-```
+## Runtime surfaces
 
-runAttribution accepts query, lines, sources, and sinks.
-It checks guards before any vendor call and fans out live pulls.
-It attributes the merged events, then fans out live pushes.
-Each live source and sink call records a cost entry,
-including zero units on failure. The SDK defaults to live mode;
-set dryRun true to preview. The package re-exports the frozen
-agentic-core API.
+The SDK targets Node.js 18+. It exports adapter classes, attribution helpers, and the shared `agentic-core` API.
 
-## MCP and worker
+CLI commands: `attribute`, `lines`, `sources`, `costs`, `doctor`, `mcp`, `help`, and `version`.
+Use `npx agentic-tracking help` for flags. `--help`, `-h`, `--version`, and `-V` are aliases.
 
-The `mcp` command and `agentic-tracking-mcp` bin serve stdio MCP.
-Use attribute_calls with to, from, since, limit, file, lines,
-source or sources, sink or sinks, and dryRun.
-DryRun defaults to true. list_lines shows Twilio or Telnyx numbers
-with an optional line map. list_sources shows key status.
-get_cost_report reads session entries and unit totals.
-.mcp.json configures agentic-tracking through npx.
+MCP tools: `attribute_calls`, `list_lines`, `list_sources`, and `get_cost_report`.
+Start stdio MCP with `npx agentic-tracking-mcp` or `npx agentic-tracking mcp`.
 
-The worker serves GET /health and POST /attribute.
-Send to, from, since, limit, file, lines, source, sink, and live
-in a JSON body. It previews unless live is true.
-Local files require a Node filesystem.
+The repository also contains a Worker handler with `GET /health` and `POST /attribute`.
+It is not a managed endpoint. Its file adapters require a Node filesystem, and network adapters read `process.env`.
+Check runtime compatibility and credential wiring before deploying it.
+
+## Delivery and behavior limits
+
+The SDK defaults to live execution. CLI attribution, MCP attribution, and the Worker handler default to preview mode.
+Select adapters explicitly; default SDK sources and sinks include all registered adapters.
+CLI live failures exit 1. Invalid CLI usage exits 2.
+
+Number matching compares the last ten digits for numbers with at least seven digits.
+Unknown lines produce `unassigned` campaigns and `unknown` sources.
+A matched call credits a lead when duration is positive or absent. Zero duration does not credit a lead.
+This rule does not establish lead quality, consent, or advertising attribution.
+
+Network requests default to a ten-second timeout. The package has no automatic retry loop or source deduplication.
+Twilio reads one call page, capped at 1,000 records. Telnyx reads one detail-record page, capped at 50.
+Twilio date filtering uses the start date. Telnyx filters the API query by `created_at`, then filters phone numbers locally.
+
+D1 creates `call_attributions` and upserts by call SID. Generated local IDs can collide across runs.
+The file sink appends records without deduplication.
+Stripe submits credited leads sequentially with the call SID as the meter-event identifier.
+Stripe can receive partial writes before a later event fails; the reported sink result does not enumerate those writes.
+Usage reports count calls, not money, and disappear when the process exits.
+
+## Integration setup
+
+Twilio and Telnyx constructors accept credentials, custom base URLs, `fetchFn`, and `timeoutMs`.
+`listLines(lineMap)` maps owned numbers to campaign labels. Unmapped numbers retain `unassigned` campaigns.
+
+D1 requires an API token with access to the selected database.
+Its optional `table` accepts a SQL identifier containing letters, digits, and underscores.
+
+Create a Stripe meter before pushing leads. Its event name must match `STRIPE_EVENT_NAME`, which defaults to `credited_lead`.
+All events use the configured customer ID. Invalid or out-of-window call timestamps are omitted.
+
+Local call files use one JSON object per line. Only `from` and `to` are required.
+Line-map files use a JSON array of objects with `number`, `campaign`, and `source`.
+
+## Status
+
+Version 0.2.0 is an early release; APIs can change before 1.0.
+Report problems through [GitHub issues](https://github.com/pooriaarab/agentic-tracking/issues).
+Public case studies are not yet published.
+
+## FAQ
+
+### Which integrations are verified?
+
+agentic-tracking has three implemented sources and three implemented sinks. Local execution and mocked tests are verified; live vendor credentials are not checked here.
+
+### Does agentic-tracking provide a managed call tracking service?
+
+agentic-tracking runs in your process. You supply vendor accounts, credentials, campaign mappings, and deployment infrastructure.
+
+### How is agentic-tracking different from CallRail?
+
+agentic-tracking provides attribution code and adapters. CallRail provides a managed call tracking product with its own account workflow.
+
+### How is agentic-tracking different from Twilio Voice?
+
+agentic-tracking reads existing call records and attributes them. Twilio Voice supplies telephony APIs that can create and manage calls.
+
+### Can I try it without vendor credentials?
+
+agentic-tracking supports JSONL input and output. The quickstart demonstrates one attributed call without network access.
+
+### Does agentic-tracking load my .env file?
+
+agentic-tracking reads the process environment. Load your environment file through your runtime or export its values before execution.
+
+### How does agentic-tracking credit leads?
+
+agentic-tracking credits matched calls with positive or omitted duration. A matched call with zero duration receives no credit.
+
+### Does agentic-tracking retry failed requests?
+
+agentic-tracking reports adapter failures without automatic retries. Inspect each result before deciding whether to replay a run.
+
+### Can agents preview attribution safely?
+
+agentic-tracking defaults MCP attribution to dry run. Preview returns adapter names and line count without source pulls or sink writes.
 
 ## License
 
-MIT. See LICENSE.
+MIT.
